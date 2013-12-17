@@ -1,0 +1,19 @@
+{
+	"uuid": "cfb411ab-18ab-47a1-a4cc-add249269c61",
+	"shortName": "Telldus Live!",
+	"longName": "Telldus Live!",
+	"companyName": "Telldus Technologies AB",
+	"versionCode": 1,
+	"versionLabel": "1.0.0",
+	"watchapp": {
+		"watchface": false
+	},
+	"appKeys": {
+		"module": 0,
+		"action": 1
+	},
+	"resources": {
+		"media": []
+	},
+	"capabilities": [ "configurable" ]
+}
