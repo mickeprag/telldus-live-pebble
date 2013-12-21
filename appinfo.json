@@ -10,7 +10,9 @@
 	},
 	"appKeys": {
 		"module": 0,
-		"action": 1
+		"action": 1,
+		"name": 2,
+		"id": 3
 	},
 	"resources": {
 		"media": []

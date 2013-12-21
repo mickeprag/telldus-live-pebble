@@ -13,7 +13,7 @@ function httpPost(url, params, cb) {
 	req.setRequestHeader("Content-length", p.length);
 	req.setRequestHeader("Connection", "close");
 
-	req.onreadystatechange = function() {//Call a function when the state changes.
+	req.onreadystatechange = function() {
 		if(req.readyState == 4 && req.status == 200) {
 			cb(req.responseText);
 		}
@@ -30,6 +30,55 @@ function parseQuery(query) {
 	return params;
 }
 
+var pebbleSendQueue = {
+	queue: [],
+	queueFull: false,
+	send: function(msg) {
+		if (this.queueFull) {
+			this.queue.push(msg);
+			return;
+		}
+		this.queueFull = true;
+		this._doSend(msg);
+	},
+	_sendDone: function(e) {
+		if (this.queue.length == 0) {
+			this.queueFull = false;
+			return;
+		}
+		var msg = pebbleSendQueue.queue.splice(0,1)[0];
+		this._doSend(msg);
+	},
+	_sendFailed: function(e) {
+		var msg = pebbleSendQueue.queue.splice(0,1)[0];
+		this._doSend(msg);
+	},
+	_doSend: function(msg) {
+		this.inQueue = msg;
+		Pebble.sendAppMessage(msg, function(e) { pebbleSendQueue._sendDone(e) }, function(e) { pebbleSendQueue._sendFailed(e) });
+	}
+};
+
+var devices = {};
+function getDevices() {
+	dispatcher.doCall('devices/list', {supportedMethods: 3}, function(r) {
+		pebbleSendQueue.send({ "module": "auth", "action": "done" });
+		devices = r['device'];
+		for(var i in devices) {
+			var name = devices[i].name;
+			if (name.length > 16) {
+				name = name.substr(0,16);
+			}
+			pebbleSendQueue.send({
+				module: "device",
+				action: "info",
+				name: name,
+				id: parseInt(i)
+			});
+		}
+	});
+}
+
 var dispatcher = {
 	publicKey: '',
 	privateKey: '',
@@ -41,15 +90,16 @@ var dispatcher = {
 	init: function() {
 		this.token = window.localStorage.getItem('token');
 		this.tokenSecret = window.localStorage.getItem('tokenSecret');
-		if (this.token == '') {
+		if (this.token == '' || this.token == null) {
 			this.authenticate();
 		} else {
-			Pebble.sendAppMessage({ "module": "auth", "action": "done" });
+			getDevices();
 		}
 	},
 	authenticate: function() {
 		this.token = '';  // Make sure these are empty
 		this.tokenSecret = '';
+		pebbleSendQueue.send({ "module": "auth", "action": "clear" });
 		var authorizeUrl = this.authorizeUrl;
 		this._doOAuth(this.requestTokenUrl, { oauth_callback: 'pebblejs:///close#' }, function(query) {
 			var params = parseQuery(query);
@@ -57,7 +107,7 @@ var dispatcher = {
 				dispatcher.token = params['oauth_token'];
 				dispatcher.tokenSecret = params['oauth_token_secret'];
 				var url = authorizeUrl + '?oauth_token=' + params['oauth_token'];
-				Pebble.sendAppMessage({ "module": "auth", "action": "request" });
+				pebbleSendQueue.send({ "module": "auth", "action": "request" });
 				Pebble.openURL(url);
 				return;
 			}
@@ -65,8 +115,8 @@ var dispatcher = {
 		});
 		return;
 	},
-	getAccessToken: function() {
-		Pebble.sendAppMessage({ "module": "auth", "action": "authenticating" });
+	getAccessToken: function(cb) {
+		pebbleSendQueue.send({ "module": "auth", "action": "authenticating" });
 		this._doOAuth(this.accessTokenUrl, {}, function(response) {
 			var params = parseQuery(response);
 			if ('oauth_token' in params && 'oauth_token_secret' in params) {
@@ -74,13 +124,17 @@ var dispatcher = {
 				dispatcher.tokenSecret = params['oauth_token_secret'];
 				window.localStorage.setItem('token', params['oauth_token']);
 				window.localStorage.setItem('tokenSecret', params['oauth_token_secret']);
-				Pebble.sendAppMessage({ "module": "auth", "action": "done" });
+				pebbleSendQueue.send({ "module": "auth", "action": "done" });
 				Pebble.showSimpleNotificationOnPebble("Telldus Live!", "Pebble was successfully paired with your Telldus Live! account");
+				cb();
 			}
 		});
 	},
-	doCall: function() {
-		
+	doCall: function(endpoint, params, cb) {
+		this._doOAuth('https://api.telldus.com/json/' + endpoint, params, function(result) {
+			var response = JSON.parse(result);
+			cb(response);
+		});
 	},
 	_setupOAuth: function(url, params) {
 		var message = {
@@ -116,18 +170,31 @@ Pebble.addEventListener("ready", function(e) {
 });
 
 Pebble.addEventListener("appmessage", function(e) {
-	console.log("Got message from pebble! " + e.payload)
-	/*for(var i in e.payload) {
-		console.log(i);
-		console.log(e.payload[i]);
+	var msg = e.payload;
+	if (!('module' in msg) || !('action' in msg)) {
+		return;
 	}
-	console.log("===");
-	console.log(e.payload['module']);*/
-	dispatcher.authenticate();
+	if (msg['module'] == 'device') {
+		if (msg['action'] == 'select') {
+			var id = msg['id'];
+			if (!(id in devices)) {
+				return;
+			}
+			if (devices[id].state == 2) {
+				var method = 1;
+			} else {
+				var method = 2;
+			}
+			dispatcher.doCall('device/command', {id: devices[id].id, method: method}, function(r) {
+				devices[id].state = method;
+			});
+		}
+	}
 });
 
 Pebble.addEventListener("showConfiguration", function(e) {
 	console.log("Show config");
+	dispatcher.authenticate();
 });
 
 Pebble.addEventListener("webviewclosed", function(e) {
@@ -137,7 +204,9 @@ Pebble.addEventListener("webviewclosed", function(e) {
 		query = query.substr(1, query.length-1);
 	}
 	var params = parseQuery(query);
-	dispatcher.getAccessToken();
+	dispatcher.getAccessToken(function() {
+		getDevices();
+	});
 });
 
 
