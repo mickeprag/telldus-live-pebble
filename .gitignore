@@ -16,3 +16,6 @@
 *.exe
 *.out
 *.app
+
+# Ignore build generated files
+build
